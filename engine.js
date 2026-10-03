@@ -19,13 +19,18 @@ export function validateJudgment(value, dimension, entries) {
 }
 
 export async function analyze(dimension, entries, config) {
+  const messages = buildMessages(dimension, entries);
+  const maxOutputTokens = config.maxOutputTokens || 2500;
+  // UTF-8 bytes plus framing overhead are a conservative estimate, not a tokenizer.
+  config.beforeRequest?.(Buffer.byteLength(JSON.stringify(messages), 'utf8') + 512 + maxOutputTokens);
   const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
     signal: AbortSignal.timeout(60000),
-    body: JSON.stringify({ model: config.model, temperature: 0.2, response_format: { type: 'json_object' }, messages: buildMessages(dimension, entries) })
+    body: JSON.stringify({ model: config.model, temperature: 0.2, max_tokens: maxOutputTokens, response_format: { type: 'json_object' }, messages })
   });
   if (!response.ok) throw new Error(`模型服务请求失败（HTTP ${response.status}）。请检查接口、模型、额度和密钥后重试。`);
   const body = await response.json();
+  if (Number.isSafeInteger(body.usage?.total_tokens) && body.usage.total_tokens >= 0) config.onUsage?.(body.usage.total_tokens);
   const raw = body.choices?.[0]?.message?.content;
   if (typeof raw !== 'string') throw new Error('模型没有返回有效内容，请重试。');
   let value;

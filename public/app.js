@@ -4,12 +4,45 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 let session = null, busy = false, status;
 const getId = () => localStorage.getItem('realmbti-session');
 function draftKey() { return `realmbti-draft-${session?.id}-${session?.dimensionIndex}-${session?.current?.answerCount}`; }
-async function api(url, options) { const r = await fetch(url, options); const body = await r.json(); if (!r.ok) throw new Error(body.error || '请求失败'); return body; }
+async function rawApi(url, options) { const r = await fetch(url, { credentials: 'same-origin', ...options }); const body = await r.json(); return { r, body }; }
+async function api(url, options) {
+  let { r, body } = await rawApi(url, options);
+  if (body.captchaRequired) { await verifyHuman(); ({ r, body } = await rawApi(url, options)); }
+  if (!r.ok) throw new Error(body.error || '请求失败'); return body;
+}
+let captchaTask;
+function verifyHuman() {
+  if (captchaTask) return captchaTask;
+  const dialog = document.querySelector('#captcha-dialog');
+  captchaTask = new Promise((resolve, reject) => {
+    let verified = false;
+    const message = document.querySelector('#captcha-error'), input = document.querySelector('#captcha-code');
+    async function refresh() {
+      message.textContent = ''; input.value = '';
+      try { const { r, body } = await rawApi('/api/captcha'); if (!r.ok) throw new Error(body.error); document.querySelector('#captcha-image').src = body.image; } catch(e) { message.textContent = e.message; }
+    }
+    document.querySelector('#captcha-refresh').onclick = refresh;
+    document.querySelector('#captcha-cancel').onclick = () => dialog.close();
+    dialog.onclose = () => { captchaTask = null; verified ? resolve() : reject(new Error('验证已取消，回答保留，可以稍后再试。')); };
+    document.querySelector('#captcha-form').onsubmit = async e => {
+      e.preventDefault(); const button = document.querySelector('#captcha-submit'); button.disabled = true;
+      try {
+        const { r, body } = await rawApi('/api/captcha/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: input.value.trim() }) });
+        if (!r.ok) throw new Error(body.error); verified = true; dialog.close();
+      } catch(e) { message.textContent = e.message; } finally { button.disabled = false; }
+    };
+    dialog.showModal(); refresh();
+  });
+  return captchaTask;
+}
 function error(message) { const box = document.querySelector('#error'); if (box) { box.textContent = message; box.hidden = false; } }
 function landing() {
-  app.innerHTML = `<section class="landing"><div class="hero-copy"><div class="eyebrow"><span class="tiny-dot"></span> LESS QUIZ. MORE YOU.</div><h1>你不止是<br>四个<span class="italic">字母。</span></h1><p class="intro">不用在「同意」与「不同意」之间犹豫。<br>聊聊你的经历、选择和感受，<br>让 AI 在真实的故事里，发现你的性格倾向。</p><div class="hero-actions"><button class="primary" id="start">开始认识自己 <span>↗</span></button>${getId() ? '<button class="quiet" id="resume">继续上次的探索 →</button>' : ''}</div><div class="facts"><span>20–40 道开放式问题</span><span>随时暂停 · 自动保存</span></div><p id="error" class="error" hidden></p>${!status.configured ? '<div class="setup"><strong>先连接 DeepSeek</strong><p>复制 <code>.env.example</code> 为 <code>.env</code>，填入 <code>AI_API_KEY</code>，再重启服务。密钥只保存在本机后端。</p></div>' : '<div class="connected"><span class="tiny-dot"></span> DeepSeek 已连接配置 · 回答将发送至模型服务</div>'}</div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="art-label top-label">THE WAY YOU SEE</div><div class="blob blob-one">E<span>向外连接</span></div><div class="blob blob-two">N<span>发现可能</span></div><div class="blob blob-three">F<span>感受价值</span></div><div class="blob blob-four">P<span>自由探索</span></div><div class="art-center">you<span>独一无二的交点</span></div><div class="art-label bottom-label">NOT A BOX. A STARTING POINT.</div></div></section><section class="how"><div><span class="eyebrow">FOUR LENSES, ONE YOU</span><h2>从四个角度，<br>慢慢看清自己。</h2></div><div class="dimension-grid">${dims.map((d, i) => `<div class="dimension-card"><span class="number">0${i + 1}</span><strong>${d[2]}</strong><h3>${d[1]}</h3><p>${d[3]}</p></div>`).join('')}</div></section>`;
+  app.innerHTML = `<section class="landing"><div class="hero-copy"><div class="eyebrow"><span class="tiny-dot"></span> LESS QUIZ. MORE YOU.</div><h1>你不止是<br>四个<span class="italic">字母。</span></h1><p class="intro">不用在「同意」与「不同意」之间犹豫。<br>聊聊你的经历、选择和感受，<br>让 AI 在真实的故事里，发现你的性格倾向。</p><div class="hero-actions"><button class="primary" id="start">开始认识自己 <span>↗</span></button>${getId() ? '<button class="quiet" id="resume">继续上次的探索 →</button>' : ''}</div><div class="facts"><span>20–40 道开放式问题</span><span>随时暂停 · 自动保存</span></div><p id="error" class="error" hidden></p>${!status.configured ? '<div class="setup"><strong>服务准备中</strong><p>模型服务尚未就绪，请稍后再来。</p></div>' : '<div class="connected"><span class="tiny-dot"></span> 由 DeepSeek 分析 · 回答将发送至模型服务</div>'}</div><div class="hero-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="art-label top-label">THE WAY YOU SEE</div><div class="blob blob-one">E<span>向外连接</span></div><div class="blob blob-two">N<span>发现可能</span></div><div class="blob blob-three">F<span>感受价值</span></div><div class="blob blob-four">P<span>自由探索</span></div><div class="art-center">you<span>独一无二的交点</span></div><div class="art-label bottom-label">NOT A BOX. A STARTING POINT.</div></div></section><section class="how"><div><span class="eyebrow">FOUR LENSES, ONE YOU</span><h2>从四个角度，<br>慢慢看清自己。</h2></div><div class="dimension-grid">${dims.map((d, i) => `<div class="dimension-card"><span class="number">0${i + 1}</span><strong>${d[2]}</strong><h3>${d[1]}</h3><p>${d[3]}</p></div>`).join('')}</div></section>`;
   document.querySelector('#start').onclick = start;
   document.querySelector('#resume')?.addEventListener('click', resume);
+  const note = document.createElement('p'); note.className = 'quota-note';
+  note.textContent = `无需注册 · 今天还可开始 ${status.limits?.remainingTests ?? 1} 次探索。已有访谈可继续；网络共享额度也可能影响使用。额度每天北京时间零点重置。`;
+  document.querySelector('.hero-copy').append(note);
 }
 async function start() {
   if (getId() && !confirm('开始新的探索？已有记录仍保存在本机，但快捷续答入口会切换到新记录。')) return;
@@ -17,12 +50,13 @@ async function start() {
   try { session = await api('/api/sessions', { method: 'POST' }); localStorage.setItem('realmbti-session', session.id); render(); } catch (e) { error(e.message); button.disabled = false; }
 }
 async function resume() { try { session = await api(`/api/sessions/${getId()}`); render(); } catch (e) { error(e.message); } }
-function render() { session.complete ? results() : interview(); }
+function render() { if (session.limits) status.limits = session.limits; session.complete ? results() : interview(); }
 function interview() {
   const current = session.current, d = dims[session.dimensionIndex];
-  app.innerHTML = `<section class="workspace"><aside class="sidebar"><span class="eyebrow">YOUR EXPLORATION</span><h2>一点一点，<br>靠近真实的你。</h2><nav aria-label="访谈进度">${dims.map((dim, i) => `<div class="step ${i === session.dimensionIndex ? 'active' : ''} ${i < session.dimensionIndex ? 'done' : ''}"><span class="step-icon">${i < session.dimensionIndex ? '✓' : `0${i + 1}`}</span><div><strong>${dim[1]}</strong><small>${i < session.dimensionIndex ? '已暂存 · 最后揭晓' : dim[2]}</small></div>${i === session.dimensionIndex ? '<span class="tiny-dot"></span>' : ''}</div>`).join('')}</nav><div class="save-note"><span>◌</span><p>已回答 ${session.totalAnswers} 题<br>已提交的回答保存在本机。<br>这一维结束后，AI 会开启新的上下文。</p></div><button id="pause" class="quiet">← 暂停并返回</button></aside><div class="question-panel"><div class="question-top"><span class="eyebrow">CHAPTER 0${session.dimensionIndex + 1} / ${d[1]}</span><span class="question-count">${current.answerCount + 1}<span> / 最多 10 题</span></span></div><div class="progress"><div style="width:${current.answerCount * 10}%"></div></div><div class="question-copy"><span class="pill">${current.answerCount >= 5 ? '根据你的故事，继续深入' : '从一个真实的场景开始'}</span><h1>${esc(current.question)}</h1><p>没有标准答案。可以说说你会怎么做，也可以讲一段真实经历。</p></div><form id="answer-form"><label for="answer" class="sr-only">你的回答</label><textarea id="answer" maxlength="4000" placeholder="我通常会……因为……\n比如有一次……" required></textarea><div class="input-footer"><span id="char-count">0 / 4000</span><span>Ctrl / ⌘ + Enter 提交</span></div><p id="error" class="error" role="alert" hidden></p><div class="submit-row"><span id="processing">${current.answerCount < 4 ? '至少回答 5 题后，AI 开始评估这一维。' : 'AI 会根据证据决定是否需要继续提问。'}</span><button class="primary" id="submit">提交回答 <span>→</span></button></div></form>${current.entries.length ? `<details class="history"><summary>回看这一维的 ${current.entries.length} 个回答</summary>${current.entries.map((e, i) => `<article><small>QUESTION ${i + 1}</small><h3>${esc(e.question)}</h3><p>${esc(e.answer)}</p></article>`).join('')}</details>` : ''}</div></section>`;
+  app.innerHTML = `<section class="workspace"><aside class="sidebar"><span class="eyebrow">YOUR EXPLORATION</span><h2>一点一点，<br>靠近真实的你。</h2><nav aria-label="访谈进度">${dims.map((dim, i) => `<div class="step ${i === session.dimensionIndex ? 'active' : ''} ${i < session.dimensionIndex ? 'done' : ''}"><span class="step-icon">${i < session.dimensionIndex ? '✓' : `0${i + 1}`}</span><div><strong>${dim[1]}</strong><small>${i < session.dimensionIndex ? '已暂存 · 最后揭晓' : dim[2]}</small></div>${i === session.dimensionIndex ? '<span class="tiny-dot"></span>' : ''}</div>`).join('')}</nav><div class="save-note"><span>◌</span><p>已回答 ${session.totalAnswers} 题<br>已提交的回答已保存。<br>这一维结束后，AI 会开启新的上下文。</p></div><button id="pause" class="quiet">← 暂停并返回</button></aside><div class="question-panel"><div class="question-top"><span class="eyebrow">CHAPTER 0${session.dimensionIndex + 1} / ${d[1]}</span><span class="question-count">${current.answerCount + 1}<span> / 最多 10 题</span></span></div><div class="progress"><div style="width:${current.answerCount * 10}%"></div></div><div class="question-copy"><span class="pill">${current.answerCount >= 5 ? '根据你的故事，继续深入' : '从一个真实的场景开始'}</span><h1>${esc(current.question)}</h1><p>没有标准答案。可以说说你会怎么做，也可以讲一段真实经历。</p></div><form id="answer-form"><label for="answer" class="sr-only">你的回答</label><textarea id="answer" maxlength="1000" placeholder="我通常会……因为……\n比如有一次……" required></textarea><div class="input-footer"><span id="char-count">0 / 1000</span><span>Ctrl / ⌘ + Enter 提交</span></div><p id="error" class="error" role="alert" hidden></p><div class="submit-row"><span id="processing">${current.answerCount < 4 ? '至少回答 5 题后，AI 开始评估这一维。' : 'AI 会根据证据决定是否需要继续提问。'}</span><button class="primary" id="submit">提交回答 <span>→</span></button></div></form>${current.entries.length ? `<details class="history"><summary>回看这一维的 ${current.entries.length} 个回答</summary>${current.entries.map((e, i) => `<article><small>QUESTION ${i + 1}</small><h3>${esc(e.question)}</h3><p>${esc(e.answer)}</p></article>`).join('')}</details>` : ''}</div></section>`;
   const textarea = document.querySelector('#answer'); textarea.value = localStorage.getItem(draftKey()) || '';
-  const update = () => { document.querySelector('#char-count').textContent = `${textarea.value.length} / 4000`; localStorage.setItem(draftKey(), textarea.value); };
+  const maxChars = session.limits?.maxAnswerChars || 1000; textarea.removeAttribute('maxlength');
+  const update = () => { document.querySelector('#char-count').textContent = `${Array.from(textarea.value).length} / ${maxChars}`; localStorage.setItem(draftKey(), textarea.value); };
   update(); textarea.addEventListener('input', update);
   textarea.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); document.querySelector('#answer-form').requestSubmit(); } });
   document.querySelector('#answer-form').onsubmit = submit;
@@ -31,6 +65,7 @@ function interview() {
 async function submit(e) {
   e.preventDefault(); if (busy) return;
   const textarea = document.querySelector('#answer'), answer = textarea.value.trim(); if (!answer) return error('先写一点你的想法，再继续。');
+  if (Array.from(answer).length > (session.limits?.maxAnswerChars || 1000)) return error(`回答最多 ${session.limits?.maxAnswerChars || 1000} 字，请稍微精简。`);
   busy = true; const key = draftKey(), button = document.querySelector('#submit'); button.disabled = true; textarea.disabled = true; document.querySelector('#pause').disabled = true;
   document.querySelector('#processing').textContent = session.current.answerCount >= 4 ? 'AI 正在阅读你的故事、核对证据，请稍候…' : '正在保存你的回答…';
   document.querySelector('#error').hidden = true;

@@ -21,13 +21,14 @@ async function fixture(t, mode = 'clear') {
   });
   await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'realmbti-test-'));
-  const app = createApp({ dataDir, config: { baseUrl: `http://127.0.0.1:${mock.address().port}`, apiKey: 'test-only', model: 'test-model' } });
+  const app = createApp({ dataDir, settings: { captchaVisitorThreshold: 1000, captchaIpThreshold: 1000, visitorRequestsPerMinute: 1000, ipRequestsPerMinute: 1000 }, config: { baseUrl: `http://127.0.0.1:${mock.address().port}`, apiKey: 'test-only', model: 'test-model' } });
   await new Promise(resolve => app.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${app.address().port}`;
   t.after(async () => { await Promise.all([new Promise(r => app.close(r)), new Promise(r => mock.close(r))]); await rm(dataDir, { recursive: true, force: true }); });
-  const api = async (route, payload) => { const response = await fetch(url + route, payload === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); return { status: response.status, body: await response.json() }; };
+  let cookie;
+  const api = async (route, payload) => { const response = await fetch(url + route, { method: payload === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) }); if (response.headers.get('set-cookie')) cookie = response.headers.get('set-cookie').split(';')[0]; return { status: response.status, body: await response.json() }; };
   const answer = (s, text = `只有${s.current.dimension}维度的经历：我在熟悉的环境里主动讨论，并从交流中恢复精力。`) => api(`/api/sessions/${s.id}/answers`, { dimension: s.current.dimension, question: s.current.question, answerCount: s.current.answerCount, answer: text });
-  return { api, answer, requests, dataDir, setFail: v => { fail = v; }, setInvalid: v => { invalid = v; } };
+  return { api, answer, requests, dataDir, getCookie: () => cookie, setFail: v => { fail = v; }, setInvalid: v => { invalid = v; } };
 }
 
 test('complete 20-answer interview: correct order, minimum 5, hidden provisional results, durable files and isolated context', async t => {
@@ -53,7 +54,7 @@ test('complete 20-answer interview: correct order, minimum 5, hidden provisional
   const restoredApp = createApp({ dataDir: f.dataDir });
   await new Promise(r => restoredApp.listen(0, '127.0.0.1', r));
   t.after(() => new Promise(r => restoredApp.close(r)));
-  const restored = await fetch(`http://127.0.0.1:${restoredApp.address().port}/api/sessions/${s.id}`);
+  const restored = await fetch(`http://127.0.0.1:${restoredApp.address().port}/api/sessions/${s.id}`, { headers: { Cookie: f.getCookie() } });
   assert.equal((await restored.json()).result.type, 'ENTJ');
 });
 
@@ -88,7 +89,7 @@ test('hallucinated, repeated, and out-of-range evidence cannot trigger early sto
 test('empty answers, oversized answers, cross-origin writes and missing credentials are rejected', async t => {
   const f = await fixture(t); const s = (await f.api('/api/sessions', {})).body;
   assert.equal((await f.answer(s, '')).status, 400); assert.equal((await f.answer(s, 'a'.repeat(4001))).status, 400);
-  const app = createApp({ config: { baseUrl: '', model: 'test', apiKey: '' } }); await new Promise(r => app.listen(0, '127.0.0.1', r));
+  const app = createApp({ dataDir: await mkdtemp(path.join(os.tmpdir(), 'realmbti-nokey-')), config: { baseUrl: '', model: 'test', apiKey: '' } }); await new Promise(r => app.listen(0, '127.0.0.1', r));
   t.after(() => new Promise(r => app.close(r))); const url = `http://127.0.0.1:${app.address().port}`;
   assert.equal((await fetch(url + '/api/sessions', { method: 'POST' })).status, 503);
   assert.equal((await fetch(url + '/api/sessions', { method: 'POST', headers: { Origin: 'https://other.example' } })).status, 403);

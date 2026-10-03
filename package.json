@@ -1,5 +1,5 @@
 {
   "name": "realmbti", "version": "1.0.0", "private": true, "type": "module",
   "scripts": { "dev": "node --env-file-if-exists=.env server.js", "start": "node --env-file-if-exists=.env server.js", "test": "node --test" },
-  "engines": { "node": ">=22.9" }
+  "engines": { "node": ">=22.16" }
 }

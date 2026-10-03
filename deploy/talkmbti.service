@@ -1,0 +1,28 @@
+[Unit]
+Description=TalkMBTI anonymous interview service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=talkmbti
+Group=talkmbti
+WorkingDirectory=/opt/talkmbti
+EnvironmentFile=/etc/talkmbti.env
+# Node >=22.16, installed at this path. Change it if your installation differs.
+ExecStart=/usr/bin/node /opt/talkmbti/server.js
+Restart=on-failure
+RestartSec=5
+StateDirectory=talkmbti
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/talkmbti
+TimeoutStopSec=90
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
