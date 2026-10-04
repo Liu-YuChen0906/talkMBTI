@@ -19,11 +19,11 @@ function guardFixture(t, settings = {}) {
 const fakeSession = id => ({ id, complete:false, records:[] });
 
 test('signed visitor survives restart; clearing or forging cookie cannot reset network limits', t => {
-  const f = guardFixture(t, { ipDailyTests:2 }); const a = f.visitor();
+  const f = guardFixture(t, { ipDailyTests:2, visitorDailyTests:1 }); const a = f.visitor();
   f.guard.create(a.v, fakeSession('s1'));
-  assert.throws(() => f.guard.create(a.v, fakeSession('s2')), /今天已开始/);
+  assert.throws(() => f.guard.create(a.v, fakeSession('s2')), /探索机会已用完/);
   f.reopen(); const restored = f.visitor(a.cookie); assert.equal(restored.v.id, a.v.id);
-  assert.throws(() => f.guard.create(restored.v, fakeSession('s2')), /今天已开始/);
+  assert.throws(() => f.guard.create(restored.v, fakeSession('s2')), /探索机会已用完/);
   const b = f.visitor(); f.guard.create(b.v, fakeSession('s2'));
   const c = f.visitor(a.cookie.slice(0,-1)+'x'); assert.notEqual(c.v.id,a.v.id);
   assert.throws(() => f.guard.create(c.v, fakeSession('s3')), /这个网络/);
@@ -79,11 +79,11 @@ test('captcha is bound to visitor and network, expires, limits attempts, and can
 });
 
 test('rate limits persist over restart and captcha does not override hard quotas', t => {
-  const f=guardFixture(t,{visitorRequestsPerMinute:2});const a=f.visitor();
+  const f=guardFixture(t,{visitorRequestsPerMinute:2,visitorDailyTests:1});const a=f.visitor();
   f.guard.enforceRate(f.guard.rate(a.v)); f.guard.enforceRate(f.guard.rate(a.v)); f.reopen();
   assert.throws(()=>f.guard.enforceRate(f.guard.rate(a.v)),/操作太频繁/);
   f.guard.create(a.v,fakeSession('a'));f.guard.challenge(a.v,'234567');f.guard.verify(a.v,'234567');
-  assert.throws(()=>f.guard.create(a.v,fakeSession('b')),/今天已开始/);
+  assert.throws(()=>f.guard.create(a.v,fakeSession('b')),/探索机会已用完/);
 });
 
 test('PNG captcha contains raster pixels without answer metadata', () => {
@@ -97,7 +97,7 @@ test('next day resets daily allowance; midnight settlement charges original day;
   const f=guardFixture(t,{visitorDailyTokens:100});const a=f.visitor();
   f.guard.day=()=> '2026-10-03';f.guard.create(a.v,fakeSession('a'));
   const pending=f.guard.reserve(a.v,'a',80);
-  f.guard.day=()=> '2026-10-04';assert.equal(f.guard.limits(a.v).remainingTokens,100);assert.equal(f.guard.limits(a.v).remainingTests,1);
+  f.guard.day=()=> '2026-10-04';assert.equal(f.guard.limits(a.v).remainingTokens,100);assert.equal(f.guard.limits(a.v).remainingTests,3);
   f.guard.settle(pending,20);assert.equal(f.guard.limits(a.v).remainingTokens,100);
   assert.equal(f.guard.row(`v:${a.v.id}`,'2026-10-03').tokens,20);
   const abandoned=f.guard.reserve(a.v,'a',70);f.guard.db.prepare('UPDATE pending SET expires=0 WHERE id=?').run(abandoned);f.guard.lastPrune=0;f.guard.prune();
@@ -108,7 +108,7 @@ async function httpFixture(t, settings={}, config={apiKey:'test',model:'mock',ba
   const dir=mkdtempSync(path.join(os.tmpdir(),'mbti-http-'));
   const server=createApp({dataDir:dir,settings,captchaGenerator:()=>({code:'234567',image:'data:image/png;base64,test-only'}),config});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
-  t.after(async()=>{await new Promise(r=>server.close(r));rmSync(dir,{recursive:true,force:true});});
+  t.after(async()=>{await server.drainAnalysis();await new Promise(r=>server.close(r));rmSync(dir,{recursive:true,force:true});});
   const url=`http://127.0.0.1:${server.address().port}`;
   function client(){let cookie; return {async call(route,payload,extra={}) {
     return new Promise((resolve,reject)=>{
@@ -121,7 +121,7 @@ async function httpFixture(t, settings={}, config={apiKey:'test',model:'mock',ba
       });request.on('error',reject);request.end(payload===undefined?undefined:JSON.stringify(payload));
     });
   }};}
-  return {url,client};
+  return {url,client,drain:()=>server.drainAnalysis()};
 }
 
 test('HTTP anonymous start, ownership protection, captcha retry and shared IP start cap', async t => {
@@ -154,6 +154,6 @@ test('HTTP concurrent answers invoke model only once; provider usage settles act
   const payload=s=>({dimension:s.current.dimension,question:s.current.question,answerCount:s.current.answerCount,answer:'这是一段真实具体的测试经历。'});
   for(let i=0;i<4;i++)state=(await a.call(`/api/sessions/${state.id}/answers`,payload(state))).body;
   const responses=await Promise.all([a.call(`/api/sessions/${state.id}/answers`,payload(state)),a.call(`/api/sessions/${state.id}/answers`,payload(state))]);
-  assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);assert.equal(calls,1);
+  assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);await f.drain();assert.equal(calls,1);
   assert.equal((await a.call('/api/status')).body.limits.remainingTokens,250000-123);
 });

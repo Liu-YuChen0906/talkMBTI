@@ -5,9 +5,9 @@ import { isIP } from 'node:net';
 import path from 'node:path';
 
 export const defaults = {
-  visitorDailyTests: 1, ipDailyTests: 8, globalDailyTests: 500, ipDailyVisitors: 32, globalDailyVisitors: 10000,
+  visitorDailyTests: 3, ipDailyTests: 8, globalDailyTests: 500, ipDailyVisitors: 32, globalDailyVisitors: 10000,
   visitorDailyTokens: 250000, ipDailyTokens: 1500000, globalDailyTokens: 10000000,
-  sessionModelCalls: 28, visitorDailyCalls: 28, ipDailyCalls: 224,
+  sessionModelCalls: 28, visitorDailyCalls: 84, ipDailyCalls: 224,
   globalConcurrency: 3, visitorRequestsPerMinute: 60, ipRequestsPerMinute: 180,
   captchaVisitorThreshold: 15, captchaIpThreshold: 60, captchaNewVisitors: 3,
   maxAnswerChars: 1000, maxOutputTokens: 2500, publicOrigin: '', trustProxy: false
@@ -144,13 +144,22 @@ export class AbuseGuard {
     const r = this.row(`v:${v.id}`);
     return { remainingTests: Math.max(0, this.settings.visitorDailyTests - r.starts), remainingTokens: Math.max(0, this.settings.visitorDailyTokens - r.tokens), resetTimezone: 'Asia/Shanghai', maxAnswerChars: this.settings.maxAnswerChars };
   }
-  create(v, session) {
-    this.tx(() => {
-      const day = this.day();
-      const limits = [this.settings.visitorDailyTests, this.settings.ipDailyTests, this.settings.globalDailyTests];
-      this.scopes(v).forEach((scope, i) => { if (this.row(scope, day).starts >= limits[i]) throw reject(i === 0 ? '你今天已开始过一次探索，可继续已有访谈，明天再开始新的。' : i === 1 ? '这个网络今天的新测试额度已用完，请明天再来。' : '今天网站的新测试额度已用完，请明天再来。'); });
-      this.scopes(v).forEach(scope => this.db.prepare('UPDATE usage SET starts=starts+1 WHERE scope=? AND day=?').run(scope, day));
-      this.db.prepare('INSERT INTO sessions(id,owner,payload) VALUES (?,?,?)').run(session.id, v.id, JSON.stringify(session));
+  insertSession(v, session) {
+    const day = this.day();
+    const limits = [this.settings.visitorDailyTests, this.settings.ipDailyTests, this.settings.globalDailyTests];
+    this.scopes(v).forEach((scope, i) => { if (this.row(scope, day).starts >= limits[i]) throw reject(i === 0 ? `你今天的 ${this.settings.visitorDailyTests} 次探索机会已用完，可继续已有访谈，明天再重做。` : i === 1 ? '这个网络今天的新测试额度已用完，请明天再来。' : '今天网站的新测试额度已用完，请明天再来。'); });
+    this.scopes(v).forEach(scope => this.db.prepare('UPDATE usage SET starts=starts+1 WHERE scope=? AND day=?').run(scope, day));
+    this.db.prepare('INSERT INTO sessions(id,owner,payload) VALUES (?,?,?)').run(session.id, v.id, JSON.stringify(session));
+  }
+  create(v, session) { this.tx(() => this.insertSession(v, session)); }
+  restart(v, id, next) {
+    return this.tx(() => {
+      const previous = this.get(v, id);
+      if (previous.discarded) throw reject('这次探索已经清空，请继续新的探索。', 409);
+      this.insertSession(v, next);
+      const cleared = { id, createdAt: previous.createdAt, discarded: true, replacedBy: next.id, records: [] };
+      this.commit(v, cleared);
+      return cleared;
     });
   }
   get(v, id) {
